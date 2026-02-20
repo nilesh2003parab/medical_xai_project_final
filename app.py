@@ -5,6 +5,7 @@ import numpy as np
 import csv
 import time
 import matplotlib.pyplot as plt
+import os
 
 # ---------- PROJECT IMPORTS ----------
 from models.fusion_model import FusionModel
@@ -24,8 +25,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------- LOAD MODEL ----------
 model = FusionModel().to(device)
+
+# Safe absolute path (fixes FileNotFoundError)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(BASE_DIR, "weights", "resnet18_pneumonia_classifier.pth")
+
+st.write("Model path:", model_path)
+st.write("File exists?", os.path.exists(model_path))
+
 try:
-    state_dict = torch.load("weights/resnet18_pneumonia_classifier.pth", map_location=device)
+    state_dict = torch.load(model_path, map_location=device)
     state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
     model.cnn.load_state_dict(state_dict)
     model.eval()
@@ -41,38 +50,28 @@ def cached_lime(_model, image_np, _transform):
 # ---------- CACHE SHAP ----------
 @st.cache_data(show_spinner=False)
 def cached_shap(_model, _img_tensor):
-    """
-    Generate a SHAP bar chart for RGB channels
-    """
     try:
-        # Run your original SHAP function
-        shap_values, score = run_shap(_model, _img_tensor)  # shap_values can be tensor or array
+        shap_values, score = run_shap(_model, _img_tensor)
 
-        # Ensure it's on CPU and numpy array
         if isinstance(shap_values, torch.Tensor):
             shap_values = shap_values.detach().cpu().numpy()
 
-        # Take mean absolute value across spatial dims if needed
         if shap_values.ndim > 1:
             shap_values = np.mean(np.abs(shap_values), axis=(0, 1))
 
-        # Labels for RGB
         labels = ["Red", "Green", "Blue"]
 
-        # Build bar chart
         fig, ax = plt.subplots(figsize=(5, 3))
         ax.bar(labels, shap_values[:3], color=["red", "green", "blue"])
         ax.set_title("SHAP Feature Importance")
         ax.set_ylabel("Impact")
         plt.tight_layout()
 
-        # Score: mean of shap values
         shap_score = float(np.mean(shap_values[:3]))
 
         return fig, shap_score
 
-    except Exception as e:
-        # Fallback: empty figure
+    except Exception:
         fig, ax = plt.subplots(figsize=(5, 3))
         ax.text(0.5, 0.5, 'SHAP not available', ha='center', va='center')
         return fig, 0.0
@@ -111,16 +110,14 @@ diabetes, bp, thyroid, cholesterol, asthma = [
 
 # ---------- IMAGE UPLOAD ----------
 uploaded = st.file_uploader("Upload Chest X-ray Image", type=["jpg", "png", "jpeg"])
+
 if uploaded is not None:
-    # ---------- IMAGE ----------
     image = Image.open(uploaded).convert("RGB")
     st.image(image, caption="Input Medical Image", width=400)
 
-    # ---------- PREPROCESS ----------
     transform = get_transform()
     img_tensor = preprocess_image(image, transform)
 
-    # ---------- PREDICTION ----------
     with st.spinner("🩺 Running model prediction..."):
         pred_class, confidence, label = cached_prediction(model, img_tensor)
         st.success(f"🩺 Prediction: **{label}**  (Confidence: {confidence:.2f})")
@@ -202,31 +199,8 @@ if uploaded is not None:
 
     st.divider()
 
-    # ---------- VALIDATION & CLINICAL FEEDBACK ----------
-    st.subheader("🩺 Validation and Clinical Feedback")
-    st.info("""
-    Clinicians review model explanations such as Grad-CAM, LIME, and SHAP visualizations    
-    to verify whether they correspond to medically relevant regions.
-    """)
-
-    feedback_col1, feedback_col2 = st.columns(2)
-    with feedback_col1:
-        st.checkbox("Grad-CAM aligns with medical knowledge", key="val_gradcam")
-        st.checkbox("LIME highlights relevant regions", key="val_lime")
-    with feedback_col2:
-        st.checkbox("SHAP top features are clinically meaningful", key="val_shap")
-        st.checkbox("Model explanation supports diagnosis", key="val_model")
-
-    st.info("""
-    If direct hospital access is limited, expert feedback can be collected from    
-    publicly available annotated datasets or published studies.
-    """)
-
-    st.divider()
-
     # ---------- SAVE & SUBMIT ----------
     if st.button("💾 Save & Submit Analysis"):
-        # Save patient data
         row = [
             patient_id, patient_name, patient_age, disease_present, major_surgeries,
             diabetes, bp, thyroid, cholesterol, asthma, label, confidence, float(escore_value)
@@ -234,19 +208,8 @@ if uploaded is not None:
         with open("patient_records.csv", "a", newline="") as f:
             csv.writer(f).writerow(row)
 
-        # Save validation feedback
-        validation_row = [
-            st.session_state.get("val_gradcam", False),
-            st.session_state.get("val_lime", False),
-            st.session_state.get("val_shap", False),
-            st.session_state.get("val_model", False),
-        ]
-        with open("validation_feedback.csv", "a", newline="") as f:
-            csv.writer(f).writerow(validation_row)
+        st.success("✅ Patient data saved successfully!")
 
-        st.success("✅ Patient data, analysis, E-Score, doctor feedback, and validation submitted successfully!")
-
-        # 🔹 Refresh the app for next patient
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.stop()
