@@ -1,5 +1,7 @@
 import streamlit as st
 import torch
+import torch.nn as nn
+from torchvision import models
 from PIL import Image
 import numpy as np
 import csv
@@ -8,7 +10,6 @@ import matplotlib.pyplot as plt
 import os
 
 # ---------- PROJECT IMPORTS ----------
-from models.fusion_model import FusionModel
 from utils.preprocessing import get_transform
 from explainability.gradcam import generate_gradcam
 from explainability.lime_exp import run_lime
@@ -24,9 +25,10 @@ st.title("🧠 Real-Time Explainable Medical Image Classification")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------- LOAD MODEL ----------
-model = FusionModel().to(device)
+model = models.resnet18(weights=None)
+model.fc = nn.Linear(model.fc.in_features, 2)
+model = model.to(device)
 
-# Safe absolute path (fixes FileNotFoundError)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(BASE_DIR, "weights", "resnet18_pneumonia_classifier.pth")
 
@@ -35,8 +37,7 @@ st.write("File exists?", os.path.exists(model_path))
 
 try:
     state_dict = torch.load(model_path, map_location=device)
-    state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
-    model.cnn.load_state_dict(state_dict)
+    model.load_state_dict(state_dict)
     model.eval()
     st.success("✅ Model loaded successfully!")
 except Exception as e:
@@ -50,31 +51,7 @@ def cached_lime(_model, image_np, _transform):
 # ---------- CACHE SHAP ----------
 @st.cache_data(show_spinner=False)
 def cached_shap(_model, _img_tensor):
-    try:
-        shap_values, score = run_shap(_model, _img_tensor)
-
-        if isinstance(shap_values, torch.Tensor):
-            shap_values = shap_values.detach().cpu().numpy()
-
-        if shap_values.ndim > 1:
-            shap_values = np.mean(np.abs(shap_values), axis=(0, 1))
-
-        labels = ["Red", "Green", "Blue"]
-
-        fig, ax = plt.subplots(figsize=(5, 3))
-        ax.bar(labels, shap_values[:3], color=["red", "green", "blue"])
-        ax.set_title("SHAP Feature Importance")
-        ax.set_ylabel("Impact")
-        plt.tight_layout()
-
-        shap_score = float(np.mean(shap_values[:3]))
-
-        return fig, shap_score
-
-    except Exception:
-        fig, ax = plt.subplots(figsize=(5, 3))
-        ax.text(0.5, 0.5, 'SHAP not available', ha='center', va='center')
-        return fig, 0.0
+    return run_shap(_model, _img_tensor)
 
 # ---------- CACHE IMAGE PREPROCESSING ----------
 @st.cache_data(show_spinner=False)
@@ -127,13 +104,15 @@ if uploaded is not None:
 
     # ---------- LIME ----------
     try:
-        st.markdown("<h4 style='text-align:center;'>🧩 LIME Explanation</h4>", unsafe_allow_html=True)
-        progress_lime = st.progress(0)
-        for i in range(0, 101, 20):
-            progress_lime.progress(i)
+        st.markdown("### 🧩 LIME Explanation")
+        progress = st.progress(0)
+        for i in range(0, 60, 20):
+            progress.progress(i)
             time.sleep(0.1)
+
         lime_img, lime_score = cached_lime(model, np.array(image), transform)
-        progress_lime.progress(100)
+
+        progress.progress(100)
         st.image(lime_img, use_container_width=True)
         st.caption(f"Score: {float(lime_score):.3f}")
     except Exception as e:
@@ -143,13 +122,15 @@ if uploaded is not None:
 
     # ---------- Grad-CAM ----------
     try:
-        st.markdown("<h4 style='text-align:center;'>🔥 Grad-CAM Heatmap</h4>", unsafe_allow_html=True)
-        progress_gradcam = st.progress(0)
-        for i in range(0, 101, 20):
-            progress_gradcam.progress(i)
+        st.markdown("### 🔥 Grad-CAM Heatmap")
+        progress = st.progress(0)
+        for i in range(0, 60, 20):
+            progress.progress(i)
             time.sleep(0.1)
+
         gradcam_img, gradcam_score = generate_gradcam(model, img_tensor, image)
-        progress_gradcam.progress(100)
+
+        progress.progress(100)
         st.image(gradcam_img, use_container_width=True)
         st.caption(f"Score: {float(gradcam_score):.3f}")
     except Exception as e:
@@ -159,18 +140,32 @@ if uploaded is not None:
 
     # ---------- SHAP ----------
     try:
-        st.markdown("<h4 style='text-align:center;'>📊 SHAP Explanation</h4>", unsafe_allow_html=True)
-        progress_shap = st.progress(0)
-        for i in range(0, 101, 20):
-            progress_shap.progress(i)
+        st.markdown("### 📊 SHAP Explanation")
+        progress = st.progress(0)
+        for i in range(0, 60, 20):
+            progress.progress(i)
             time.sleep(0.1)
-        shap_fig, shap_score = cached_shap(model, img_tensor)
-        progress_shap.progress(100)
-        if shap_fig is not None:
-            st.pyplot(shap_fig, clear_figure=True)
-        else:
-            st.warning("SHAP figure not generated")
+
+        shap_values, shap_score = cached_shap(model, img_tensor)
+
+        progress.progress(100)
+
+        if isinstance(shap_values, torch.Tensor):
+            shap_values = shap_values.detach().cpu().numpy()
+
+        if shap_values.ndim > 1:
+            shap_values = np.mean(np.abs(shap_values), axis=(0, 1))
+
+        labels = ["Red", "Green", "Blue"]
+        fig, ax = plt.subplots(figsize=(5, 3))
+        ax.bar(labels, shap_values[:3])
+        ax.set_title("SHAP Feature Importance")
+        ax.set_ylabel("Impact")
+        plt.tight_layout()
+
+        st.pyplot(fig)
         st.caption(f"Score: {float(shap_score):.3f}")
+
     except Exception as e:
         st.error(f"SHAP error: {e}")
 
@@ -178,9 +173,7 @@ if uploaded is not None:
 
     # ---------- E-Score ----------
     try:
-        st.markdown("<h4 style='text-align:center;'>📏 E-Score</h4>", unsafe_allow_html=True)
-        with st.spinner("📏 Calculating E-Score..."):
-            escore_value = e_score(model, img_tensor, label)
+        escore_value = e_score(model, img_tensor, label)
         st.info(f"E-Score: {float(escore_value):.3f}")
     except Exception as e:
         st.error(f"E-Score error: {e}")
@@ -189,9 +182,7 @@ if uploaded is not None:
 
     # ---------- Doctor Feedback ----------
     try:
-        st.markdown("<h4 style='text-align:center;'>👨‍⚕️ Doctor Feedback</h4>", unsafe_allow_html=True)
-        with st.spinner("👨‍⚕️ Loading Doctor Feedback..."):
-            feedback_img, feedback_text = doctor_feedback(label)
+        feedback_img, feedback_text = doctor_feedback(label)
         st.image(feedback_img, width=350)
         st.caption(feedback_text)
     except Exception:
@@ -199,17 +190,14 @@ if uploaded is not None:
 
     st.divider()
 
-    # ---------- SAVE & SUBMIT ----------
+    # ---------- SAVE ----------
     if st.button("💾 Save & Submit Analysis"):
         row = [
-            patient_id, patient_name, patient_age, disease_present, major_surgeries,
-            diabetes, bp, thyroid, cholesterol, asthma, label, confidence, float(escore_value)
+            patient_id, patient_name, patient_age, disease_present,
+            major_surgeries, diabetes, bp, thyroid, cholesterol,
+            asthma, label, confidence
         ]
         with open("patient_records.csv", "a", newline="") as f:
             csv.writer(f).writerow(row)
 
         st.success("✅ Patient data saved successfully!")
-
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.stop()
