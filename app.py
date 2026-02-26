@@ -182,13 +182,23 @@ if uploaded is not None:
 
 
  # ---------- E-Score ----------
+
 try:
-    escore_value = e_score(
-        float(gradcam_score),
-        float(lime_score),
-        float(shap_score)
-    )
-    st.info(f"E-Score: {float(escore_value):.3f}")
+    if "gradcam_score" in locals() and \
+       "lime_score" in locals() and \
+       "shap_score" in locals():
+
+        escore_value = e_score(
+            float(gradcam_score),
+            float(lime_score),
+            float(shap_score)
+        )
+
+        st.info(f"E-Score: {float(escore_value):.3f}")
+
+    else:
+        st.warning("E-Score not computed due to missing explanation scores.")
+
 except Exception as e:
     st.error(f"E-Score error: {e}")
 
