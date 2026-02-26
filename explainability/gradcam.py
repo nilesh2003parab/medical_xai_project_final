@@ -15,7 +15,7 @@ def generate_gradcam(model, image_tensor, original_image):
     def forward_hook(module, input, output):
         activations.append(output)
 
-    target_layer = model.cnn.layer4[-1]
+    target_layer = model.backbone.layer4[-1]
 
     handle_f = target_layer.register_forward_hook(forward_hook)
     handle_b = target_layer.register_backward_hook(backward_hook)
