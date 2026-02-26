@@ -27,6 +27,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ---------- LOAD MODEL ----------
 model = models.resnet18(weights=None)
 model.fc = nn.Linear(model.fc.in_features, 2)
+
+# ✅ FIX FOR SHAP INPLACE ERROR (ONLY THIS ADDED)
+def disable_inplace(model):
+    for module in model.modules():
+        if hasattr(module, "inplace"):
+            module.inplace = False
+
+disable_inplace(model)
+
 model = model.to(device)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
