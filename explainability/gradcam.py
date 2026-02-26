@@ -9,16 +9,18 @@ def generate_gradcam(model, image_tensor, original_image):
     gradients = []
     activations = []
 
-    def backward_hook(module, grad_in, grad_out):
-        gradients.append(grad_out[0])
+    def backward_hook(module, grad_input, grad_output):
+        gradients.append(grad_output[0])
 
     def forward_hook(module, input, output):
         activations.append(output)
 
-    target_layer = model.backbone.layer4[-1]
+    # ✅ FIX 1: Remove .backbone
+    target_layer = model.layer4[-1]
 
+    # ✅ FIX 2: Use full backward hook (safer)
     handle_f = target_layer.register_forward_hook(forward_hook)
-    handle_b = target_layer.register_backward_hook(backward_hook)
+    handle_b = target_layer.register_full_backward_hook(backward_hook)
 
     output = model(image_tensor)
     class_idx = output.argmax(dim=1)
@@ -34,7 +36,8 @@ def generate_gradcam(model, image_tensor, original_image):
     cam = np.maximum(cam, 0)
     cam = cam / (cam.max() + 1e-8)
 
-    heatmap = cv2.resize(cam, original_image.size)
+    # Convert PIL size properly
+    heatmap = cv2.resize(cam, (original_image.size[0], original_image.size[1]))
     heatmap = np.uint8(255 * heatmap)
     heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
 
