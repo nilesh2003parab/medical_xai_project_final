@@ -180,14 +180,17 @@ if uploaded is not None:
 
     st.divider()
 
-    # ---------- E-Score ----------
-    try:
-        escore_value = e_score(model, img_tensor, label)
-        st.info(f"E-Score: {float(escore_value):.3f}")
-    except Exception as e:
-        st.error(f"E-Score error: {e}")
 
-    st.divider()
+ # ---------- E-Score ----------
+try:
+    escore_value = e_score(
+        float(gradcam_score),
+        float(lime_score),
+        float(shap_score)
+    )
+    st.info(f"E-Score: {float(escore_value):.3f}")
+except Exception as e:
+    st.error(f"E-Score error: {e}")
 
     # ---------- Doctor Feedback ----------
     try:
