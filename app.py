@@ -1,3 +1,6 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -7,7 +10,6 @@ import numpy as np
 import csv
 import time
 import matplotlib.pyplot as plt
-import os
 
 # ---------- PROJECT IMPORTS ----------
 from utils.preprocessing import get_transform
@@ -21,8 +23,8 @@ from utils.feedback_dataset import doctor_feedback
 st.set_page_config(page_title="Medical XAI", layout="wide")
 st.title("🧠 Real-Time Explainable Medical Image Classification")
 
-# ---------- DEVICE ----------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# ---------- DEVICE (FORCED CPU FIX) ----------
+device = torch.device("cpu")
 
 # ---------- LOAD MODEL ----------
 model = models.resnet18(weights=None)
