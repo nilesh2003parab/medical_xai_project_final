@@ -28,7 +28,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = models.resnet18(weights=None)
 model.fc = nn.Linear(model.fc.in_features, 2)
 
-# ✅ FIX FOR SHAP INPLACE ERROR (ONLY THIS ADDED)
+# FIX FOR SHAP INPLACE ERROR
 def disable_inplace(model):
     for module in model.modules():
         if hasattr(module, "inplace"):
@@ -180,27 +180,26 @@ if uploaded is not None:
 
     st.divider()
 
+    # ---------- E-Score ----------
+    try:
+        if "gradcam_score" in locals() and \
+           "lime_score" in locals() and \
+           "shap_score" in locals():
 
- # ---------- E-Score ----------
+            escore_value = e_score(
+                float(gradcam_score),
+                float(lime_score),
+                float(shap_score)
+            )
 
-try:
-    if "gradcam_score" in locals() and \
-       "lime_score" in locals() and \
-       "shap_score" in locals():
+            st.info(f"E-Score: {float(escore_value):.3f}")
+        else:
+            st.warning("E-Score not computed due to missing explanation scores.")
 
-        escore_value = e_score(
-            float(gradcam_score),
-            float(lime_score),
-            float(shap_score)
-        )
+    except Exception as e:
+        st.error(f"E-Score error: {e}")
 
-        st.info(f"E-Score: {float(escore_value):.3f}")
-
-    else:
-        st.warning("E-Score not computed due to missing explanation scores.")
-
-except Exception as e:
-    st.error(f"E-Score error: {e}")
+    st.divider()
 
     # ---------- Doctor Feedback ----------
     try:
