@@ -114,7 +114,7 @@ if uploaded is not None:
         st.markdown("### 🧩 LIME Explanation")
         with st.spinner("Running LIME..."):
             lime_img, lime_score = run_lime(model, np.array(image), transform)
-        st.image(lime_img, use_container_width=True)
+        st.image(lime_img, width="stretch")
         st.caption(f"LIME Score: {float(lime_score):.3f}")
     except Exception as e:
         st.error(f"LIME error: {e}")
@@ -126,7 +126,7 @@ if uploaded is not None:
         st.markdown("### 🔥 Grad-CAM Heatmap")
         with st.spinner("Running Grad-CAM..."):
             gradcam_img, gradcam_score = generate_gradcam(model, img_tensor, image)
-        st.image(gradcam_img, use_container_width=True)
+        st.image(gradcam_img, width="stretch")
         st.caption(f"Grad-CAM Score: {float(gradcam_score):.3f}")
     except Exception as e:
         st.error(f"Grad-CAM error: {e}")
