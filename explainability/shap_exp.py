@@ -1,56 +1,59 @@
 import torch
 import numpy as np
-import shap
+import cv2
 
 
 def run_shap(model, image_tensor):
     """
-    SHAP using GradientExplainer with multiple background samples
-    to avoid near-zero gradients from a single black background.
+    Occlusion-based saliency map (SHAP-style).
+    Slides a patch across the image and measures prediction drop.
+    Always produces real non-zero values — no GradientExplainer issues.
     Returns (channel_importance (3,), spatial_map (H,W), float score).
     """
     model.eval()
     device = next(model.parameters()).device
 
     inp = image_tensor.clone().detach().float().to(device)  # (1, 3, H, W)
+    _, C, H, W = inp.shape
 
-    # Use 5 random noise backgrounds — much better than single zero background
-    torch.manual_seed(42)
-    background = torch.randn(5, *inp.shape[1:]).to(device) * 0.1
-
-    explainer = shap.GradientExplainer(model, background)
-    shap_values = explainer.shap_values(inp)
-
-    # shap_values: list[n_classes] of (1, C, H, W)  OR  ndarray
-    if isinstance(shap_values, list):
-        sv_array = np.array(shap_values)   # (n_classes, 1, C, H, W)
-    else:
-        sv_array = np.array(shap_values)
-
-    # Get predicted class
+    # Baseline prediction
     with torch.no_grad():
-        pred_class = int(model(inp).argmax(dim=1).item())
+        baseline_output = torch.softmax(model(inp), dim=1)
+        pred_class = baseline_output.argmax(dim=1).item()
+        baseline_score = baseline_output[0, pred_class].item()
 
-    # Extract (C, H, W) safely
-    if sv_array.ndim == 5:
-        idx = min(pred_class, sv_array.shape[0] - 1)
-        sv = sv_array[idx, 0]       # (C, H, W)
-    elif sv_array.ndim == 4:
-        sv = sv_array[0]            # (C, H, W)
-    elif sv_array.ndim == 3:
-        sv = sv_array
-    else:
-        sv = np.zeros((3, 224, 224), dtype=np.float32)
+    # Occlusion patch size and stride
+    patch_size = 32
+    stride = 16
 
-    sv = sv.astype(np.float32)
-    if sv.ndim != 3 or sv.shape[0] != 3:
-        sv = np.zeros((3, 224, 224), dtype=np.float32)
+    saliency = np.zeros((H, W), dtype=np.float32)
+    counts   = np.zeros((H, W), dtype=np.float32)
 
-    # Per-channel mean |SHAP| -> bar chart
-    channel_importance = np.mean(np.abs(sv), axis=(1, 2))   # (3,)
+    for y in range(0, H - patch_size + 1, stride):
+        for x in range(0, W - patch_size + 1, stride):
+            occluded = inp.clone()
+            occluded[:, :, y:y+patch_size, x:x+patch_size] = 0.0  # black patch
 
-    # Spatial mean |SHAP| across channels -> heatmap overlay
-    spatial_map = np.mean(np.abs(sv), axis=0)               # (H, W)
+            with torch.no_grad():
+                score = torch.softmax(model(occluded), dim=1)[0, pred_class].item()
 
-    score = float(np.mean(np.abs(sv)))
-    return channel_importance, spatial_map, score
+            drop = baseline_score - score  # positive = this patch was important
+            saliency[y:y+patch_size, x:x+patch_size] += drop
+            counts[y:y+patch_size, x:x+patch_size]   += 1
+
+    # Average overlapping patches
+    counts = np.where(counts == 0, 1, counts)
+    saliency = saliency / counts
+
+    # Clip negatives (regions that helped when occluded = not important)
+    saliency = np.clip(saliency, 0, None)
+
+    # Per-channel importance: apply saliency to each channel of the image
+    inp_np = inp[0].detach().cpu().numpy()  # (3, H, W)
+    channel_importance = np.array([
+        float(np.mean(np.abs(inp_np[c]) * saliency))
+        for c in range(3)
+    ])
+
+    score = float(saliency.mean())
+    return channel_importance, saliency, score
