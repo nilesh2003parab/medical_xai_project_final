@@ -1,48 +1,70 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 from PIL import Image
 
 
 def generate_gradcam(model, image_tensor, original_image):
+    """
+    Grad-CAM on ResNet18 layer4. Returns (PIL Image overlay, float score).
+    """
     model.eval()
     gradients = []
     activations = []
 
-    def forward_hook(module, input, output):
-        activations.append(output)
+    def forward_hook(module, inp, out):
+        activations.append(out.clone())
 
-    def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0])
+    def backward_hook(module, grad_in, grad_out):
+        gradients.append(grad_out[0].clone())
 
     target_layer = model.layer4[-1]
-    handle_f = target_layer.register_forward_hook(forward_hook)
-    handle_b = target_layer.register_full_backward_hook(backward_hook)
+    fh = target_layer.register_forward_hook(forward_hook)
+    bh = target_layer.register_full_backward_hook(backward_hook)
 
-    # Need gradients - use fresh tensor
-    tensor = image_tensor.clone().detach().requires_grad_(True)
+    # Fresh tensor with grad
+    tensor = image_tensor.clone().detach().float().requires_grad_(True)
     output = model(tensor)
-    class_idx = output.argmax(dim=1).item()
+    pred_class = output.argmax(dim=1).item()
 
     model.zero_grad()
-    output[0, class_idx].backward()
+    output[0, pred_class].backward()
 
-    handle_f.remove()
-    handle_b.remove()
+    fh.remove()
+    bh.remove()
 
-    grads = gradients[0].mean(dim=(2, 3), keepdim=True)
-    cam = (grads * activations[0]).sum(dim=1).squeeze()
-    cam = cam.detach().cpu().numpy()
-    cam = np.maximum(cam, 0)
-    cam = cam / (cam.max() + 1e-8)
+    if not gradients or not activations:
+        return original_image.convert("RGB"), 0.0
 
-    w, h = original_image.size
-    heatmap = cv2.resize(cam, (w, h))
-    heatmap_color = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
+    grads = gradients[0]        # (1, C, H, W)
+    acts  = activations[0]      # (1, C, H, W)
 
-    image_np = np.array(original_image.convert("RGB"))
-    # heatmap_color is BGR, convert to RGB
-    heatmap_rgb = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
-    overlay = cv2.addWeighted(image_np, 0.6, heatmap_rgb, 0.4, 0)
+    # Weight channels by global-average-pooled gradients
+    weights = grads.mean(dim=(2, 3), keepdim=True)
+    cam = (weights * acts).sum(dim=1).squeeze(0)   # (H, W)
+    cam = F.relu(cam).detach().cpu().numpy()
 
-    return Image.fromarray(overlay), float(heatmap.mean())
+    # Normalize to [0, 1]
+    cam_min, cam_max = cam.min(), cam.max()
+    if cam_max - cam_min > 1e-8:
+        cam = (cam - cam_min) / (cam_max - cam_min)
+    else:
+        cam = np.zeros_like(cam)
+
+    # Resize to original image size
+    orig_rgb = original_image.convert("RGB")
+    w, h = orig_rgb.size
+    cam_resized = cv2.resize(cam, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    # Apply jet colormap (returns BGR)
+    heatmap_bgr = cv2.applyColorMap(np.uint8(255 * cam_resized), cv2.COLORMAP_JET)
+    heatmap_rgb = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB)
+
+    # Blend with original
+    orig_np = np.array(orig_rgb, dtype=np.float32)
+    overlay = 0.55 * orig_np + 0.45 * heatmap_rgb.astype(np.float32)
+    overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+
+    score = float(cam_resized.mean())
+    return Image.fromarray(overlay), score
