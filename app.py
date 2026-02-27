@@ -8,8 +8,8 @@ from torchvision import models
 from PIL import Image
 import numpy as np
 import csv
-import time
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 # ---------- PROJECT IMPORTS ----------
 from utils.preprocessing import get_transform
@@ -23,32 +23,26 @@ from utils.feedback_dataset import doctor_feedback
 st.set_page_config(page_title="Medical XAI", layout="wide")
 st.title("🧠 Real-Time Explainable Medical Image Classification")
 
-# ---------- DEVICE ----------
 device = torch.device("cpu")
 
 
-# ---------- DISABLE INPLACE (fixes SHAP error) ----------
 def disable_inplace(m):
     for module in m.modules():
         if hasattr(module, "inplace"):
             module.inplace = False
 
 
-# ---------- LOAD MODEL — use cache_resource (not cache_data) ----------
 @st.cache_resource(show_spinner="Loading model...")
 def load_model():
     m = models.resnet18(weights=None)
     m.fc = nn.Linear(m.fc.in_features, 2)
     disable_inplace(m)
     m = m.to(device)
-
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(BASE_DIR, "weights", "resnet18_pneumonia_classifier.pth")
-
     if not os.path.exists(path):
-        st.error(f"❌ Weights not found: {path}\nRun train_model.py first.")
+        st.error(f"❌ Weights not found: {path}  —  Run train_model.py first.")
         st.stop()
-
     state_dict = torch.load(path, map_location=device)
     m.load_state_dict(state_dict)
     m.eval()
@@ -57,14 +51,11 @@ def load_model():
 
 model = load_model()
 st.success("✅ Model loaded successfully!")
-
 transform = get_transform()
 
 
-# ---------- HELPERS (no cache_data on torch objects) ----------
 def preprocess_image(image):
-    tensor = transform(image).unsqueeze(0).to(device)
-    return tensor
+    return transform(image).unsqueeze(0).to(device)
 
 
 def run_prediction(img_tensor):
@@ -80,9 +71,9 @@ def run_prediction(img_tensor):
 
 # ---------- SIDEBAR ----------
 st.sidebar.header("🧾 Patient Information")
-patient_id = st.sidebar.text_input("Patient ID")
-patient_name = st.sidebar.text_input("Patient Name")
-patient_age = st.sidebar.number_input("Age", min_value=0, max_value=120)
+patient_id    = st.sidebar.text_input("Patient ID")
+patient_name  = st.sidebar.text_input("Patient Name")
+patient_age   = st.sidebar.number_input("Age", min_value=0, max_value=120)
 disease_present = st.sidebar.radio("Any Disease Present?", ("Yes", "No"))
 major_surgeries = st.sidebar.text_area("Major Surgeries")
 
@@ -102,68 +93,84 @@ if uploaded is not None:
 
     with st.spinner("🩺 Running model prediction..."):
         pred_class, confidence, label = run_prediction(img_tensor)
-        st.success(f"🩺 Prediction: **{label}**  (Confidence: {confidence:.2f})")
+
+    color = "🔴" if label == "Pneumonia" else "🟢"
+    st.success(f"{color} Prediction: **{label}**  |  Confidence: **{confidence:.2%}**")
 
     st.divider()
     st.subheader("🔍 Explainability Results")
 
+    col1, col2 = st.columns(2)
     gradcam_score = lime_score = shap_score = None
 
-    # ---------- LIME ----------
-    try:
-        st.markdown("### 🧩 LIME Explanation")
-        with st.spinner("Running LIME..."):
-            lime_img, lime_score = run_lime(model, np.array(image), transform)
-        st.image(lime_img, width="stretch")
-        st.caption(f"LIME Score: {float(lime_score):.3f}")
-    except Exception as e:
-        st.error(f"LIME error: {e}")
-
-    st.divider()
-
     # ---------- Grad-CAM ----------
-    try:
-        st.markdown("### 🔥 Grad-CAM Heatmap")
-        with st.spinner("Running Grad-CAM..."):
-            gradcam_img, gradcam_score = generate_gradcam(model, img_tensor, image)
-        st.image(gradcam_img, width="stretch")
-        st.caption(f"Grad-CAM Score: {float(gradcam_score):.3f}")
-    except Exception as e:
-        st.error(f"Grad-CAM error: {e}")
+    with col1:
+        st.markdown("### 🔥 Grad-CAM")
+        try:
+            with st.spinner("Running Grad-CAM..."):
+                gradcam_img, gradcam_score = generate_gradcam(model, img_tensor, image)
+            st.image(gradcam_img, use_container_width=True)
+            st.caption(f"Score: {gradcam_score:.3f}  |  Highlights regions activating the prediction")
+        except Exception as e:
+            st.error(f"Grad-CAM error: {e}")
+
+    # ---------- LIME ----------
+    with col2:
+        st.markdown("### 🧩 LIME")
+        try:
+            with st.spinner("Running LIME (may take ~15s)..."):
+                lime_img, lime_score = run_lime(model, np.array(image), transform)
+            st.image(lime_img, use_container_width=True)
+            st.caption(f"Score: {lime_score:.3f}  |  Red/yellow outlines = important regions")
+        except Exception as e:
+            st.error(f"LIME error: {e}")
 
     st.divider()
 
     # ---------- SHAP ----------
+    st.markdown("### 📊 SHAP Explanation")
     try:
-        st.markdown("### 📊 SHAP Explanation")
         with st.spinner("Running SHAP..."):
-            shap_values, shap_score = run_shap(model, img_tensor)
+            channel_importance, spatial_map, shap_score = run_shap(model, img_tensor)
 
-        if isinstance(shap_values, list):
-            sv = np.array(shap_values[pred_class])
-        else:
-            sv = np.array(shap_values)
+        shap_col1, shap_col2 = st.columns(2)
 
-        # Flatten to 3 channel values for bar chart
-        sv = np.squeeze(sv)
-        if sv.ndim == 3:
-            channel_means = np.mean(np.abs(sv), axis=(1, 2))
-        elif sv.ndim == 1:
-            channel_means = sv[:3]
-        else:
-            channel_means = np.mean(np.abs(sv), axis=tuple(range(1, sv.ndim)))[:3]
+        with shap_col1:
+            st.markdown("**Channel Importance (R/G/B)**")
+            fig, ax = plt.subplots(figsize=(4, 3))
+            bars = ax.bar(["Red", "Green", "Blue"], channel_importance,
+                          color=["#e74c3c", "#2ecc71", "#3498db"], edgecolor="black")
+            ax.set_ylabel("Mean |SHAP|")
+            ax.set_title("Per-Channel Feature Impact")
+            for bar, val in zip(bars, channel_importance):
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.0001,
+                        f"{val:.4f}", ha="center", va="bottom", fontsize=8)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
 
-        channel_means = np.array(channel_means).flatten()[:3]
+        with shap_col2:
+            st.markdown("**Spatial SHAP Heatmap**")
+            # Normalize spatial map
+            s_min, s_max = spatial_map.min(), spatial_map.max()
+            if s_max - s_min > 1e-8:
+                spatial_norm = (spatial_map - s_min) / (s_max - s_min)
+            else:
+                spatial_norm = np.zeros_like(spatial_map)
 
-        labels_rgb = ["Red", "Green", "Blue"]
-        fig, ax = plt.subplots(figsize=(5, 3))
-        ax.bar(labels_rgb, channel_means)
-        ax.set_title("SHAP Channel Importance")
-        ax.set_ylabel("Mean |SHAP|")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-        st.caption(f"SHAP Score: {float(shap_score):.3f}")
+            # Overlay on original image
+            orig_resized = image.resize((224, 224))
+            orig_np = np.array(orig_resized).astype(np.float32)
+
+            heatmap_colored = cm.hot(spatial_norm)[:, :, :3]  # (H, W, 3) float
+            heatmap_colored = (heatmap_colored * 255).astype(np.float32)
+
+            shap_overlay = 0.5 * orig_np + 0.5 * heatmap_colored
+            shap_overlay = np.clip(shap_overlay, 0, 255).astype(np.uint8)
+
+            st.image(shap_overlay, caption="Bright = high SHAP impact area", use_container_width=True)
+
+        st.caption(f"SHAP Score: {shap_score:.4f}")
 
     except Exception as e:
         st.error(f"SHAP error: {e}")
@@ -171,21 +178,18 @@ if uploaded is not None:
     st.divider()
 
     # ---------- E-Score ----------
-    try:
-        if gradcam_score is not None and lime_score is not None and shap_score is not None:
-            escore_value = e_score(float(gradcam_score), float(lime_score), float(shap_score))
-            st.info(f"🧮 E-Score (Weighted Explainability): **{float(escore_value):.3f}**")
-        else:
-            st.warning("E-Score not computed — one or more explanations failed.")
-    except Exception as e:
-        st.error(f"E-Score error: {e}")
+    if gradcam_score is not None and lime_score is not None and shap_score is not None:
+        escore_val = e_score(float(gradcam_score), float(lime_score), float(shap_score))
+        st.info(f"🧮 **E-Score** (Weighted Explainability Index): `{escore_val:.3f}`")
+    else:
+        st.warning("E-Score not computed — one or more explanations failed.")
 
     st.divider()
 
     # ---------- Doctor Feedback ----------
     try:
         feedback_img, feedback_text = doctor_feedback(label)
-        st.image(feedback_img, width=400)
+        st.image(feedback_img, width=500)
         st.caption(feedback_text)
     except Exception:
         st.warning("No doctor feedback image available.")
@@ -194,11 +198,9 @@ if uploaded is not None:
 
     # ---------- SAVE ----------
     if st.button("💾 Save & Submit Analysis"):
-        row = [
-            patient_id, patient_name, patient_age, disease_present,
-            major_surgeries, diabetes, bp, thyroid, cholesterol,
-            asthma, label, confidence
-        ]
+        row = [patient_id, patient_name, patient_age, disease_present,
+               major_surgeries, diabetes, bp, thyroid, cholesterol,
+               asthma, label, f"{confidence:.4f}"]
         with open("patient_records.csv", "a", newline="") as f:
             csv.writer(f).writerow(row)
         st.success("✅ Patient data saved successfully!")
