@@ -1,26 +1,24 @@
 import shap
 import torch
-import matplotlib.pyplot as plt
+import numpy as np
 
 
 def run_shap(model, image_tensor):
-
     model.eval()
+    device = next(model.parameters()).device
 
-    # ✅ FIX 1: clone tensor (prevents view modification error)
-    image_tensor = image_tensor.clone()
+    # Clone to avoid in-place modification issues
+    inp = image_tensor.clone().detach().to(device)
+    background = torch.zeros_like(inp).to(device)
 
-    # ✅ FIX 2: safer background (no repeat view issues)
-    background = image_tensor.clone().detach()
-
-    # ✅ FIX 3: use GradientExplainer instead of DeepExplainer
     explainer = shap.GradientExplainer(model, background)
+    shap_values = explainer.shap_values(inp)
 
-    shap_values = explainer.shap_values(image_tensor)
+    # shap_values is a list of arrays, one per class
+    if isinstance(shap_values, list):
+        sv = np.array(shap_values)  # (n_classes, 1, C, H, W)
+    else:
+        sv = np.array(shap_values)
 
-    fig = plt.figure()
-    shap.image_plot(shap_values, image_tensor.detach().cpu().numpy(), show=False)
-
-    shap_score = float(abs(shap_values[0]).mean())
-
-    return shap_values, shap_score
+    score = float(np.mean(np.abs(sv)))
+    return shap_values, score
