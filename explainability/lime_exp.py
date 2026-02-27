@@ -7,12 +7,13 @@ from PIL import Image
 
 def run_lime(model, image_np, transform):
     """
-    LIME explanation. Returns (numpy uint8 image with boundaries, float score).
+    LIME explanation for brain MRI — 4-class classifier.
+    Green outline = supports prediction | Orange = contradicts.
     """
     model.eval()
     device = next(model.parameters()).device
 
-    # Ensure input is uint8 RGB (H, W, 3)
+    # Sanitize input
     if image_np.dtype != np.uint8:
         image_np = np.clip(image_np, 0, 255).astype(np.uint8)
     if image_np.ndim == 2:
@@ -21,39 +22,37 @@ def run_lime(model, image_np, transform):
         image_np = image_np[:, :, :3]
 
     def predict_fn(images):
-        batch = []
-        for img in images:
-            pil = Image.fromarray(img.astype(np.uint8)).convert("RGB")
-            tensor = transform(pil)
-            batch.append(tensor)
-        batch_tensor = torch.stack(batch).to(device)
+        batch = torch.stack([
+            transform(Image.fromarray(img.astype(np.uint8)).convert("RGB"))
+            for img in images
+        ]).to(device)
         with torch.no_grad():
-            logits = model(batch_tensor)
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
-        return probs
+            probs = torch.softmax(model(batch), dim=1).cpu().numpy()
+        return probs  # shape (N, 4)
 
-    explainer = lime_image.LimeImageExplainer()
+    explainer   = lime_image.LimeImageExplainer()
     explanation = explainer.explain_instance(
         image_np,
         predict_fn,
-        top_labels=2,
+        top_labels=4,
         hide_color=0,
-        num_samples=300,
+        num_samples=500,
+        num_superpixels=60,
         random_seed=42,
     )
 
     top_label = explanation.top_labels[0]
     temp, mask = explanation.get_image_and_mask(
         top_label,
-        positive_only=True,
-        num_features=8,
+        positive_only=False,
+        num_features=10,
         hide_rest=False,
+        min_weight=0.01,
     )
 
-    # temp is float [0,255], mask is binary
     temp_norm = temp.astype(np.float64) / 255.0
-    lime_img = mark_boundaries(temp_norm, mask, color=(1, 0, 0), outline_color=(1, 1, 0))
-    lime_img = (lime_img * 255).clip(0, 255).astype(np.uint8)
+    lime_img  = mark_boundaries(temp_norm, mask,
+                                color=(0, 1, 0), outline_color=(1, 0.5, 0))
+    lime_img  = (lime_img * 255).clip(0, 255).astype(np.uint8)
 
-    score = float(mask.mean())
-    return lime_img, score
+    return lime_img, float(np.abs(mask).mean())
