@@ -6,9 +6,6 @@ from PIL import Image
 
 
 def generate_gradcam(model, image_tensor, original_image):
-    """
-    Grad-CAM on ResNet18 layer4. Returns (PIL Image overlay, float score).
-    """
     model.eval()
     gradients = []
     activations = []
@@ -23,11 +20,9 @@ def generate_gradcam(model, image_tensor, original_image):
     fh = target_layer.register_forward_hook(forward_hook)
     bh = target_layer.register_full_backward_hook(backward_hook)
 
-    # Fresh tensor with grad
     tensor = image_tensor.clone().detach().float().requires_grad_(True)
     output = model(tensor)
     pred_class = output.argmax(dim=1).item()
-
     model.zero_grad()
     output[0, pred_class].backward()
 
@@ -37,13 +32,12 @@ def generate_gradcam(model, image_tensor, original_image):
     if not gradients or not activations:
         return original_image.convert("RGB"), 0.0
 
-    grads = gradients[0]        # (1, C, H, W)
-    acts  = activations[0]      # (1, C, H, W)
+    grads = gradients[0]   # (1, C, H, W)
+    acts  = activations[0] # (1, C, H, W)
 
-    # Weight channels by global-average-pooled gradients
     weights = grads.mean(dim=(2, 3), keepdim=True)
-    cam = (weights * acts).sum(dim=1).squeeze(0)   # (H, W)
-    cam = F.relu(cam).detach().cpu().numpy()
+    cam = (weights * acts).sum(dim=1).squeeze(0)
+    cam = F.relu(cam).detach().cpu().numpy().astype(np.float32)
 
     # Normalize to [0, 1]
     cam_min, cam_max = cam.min(), cam.max()
@@ -57,14 +51,13 @@ def generate_gradcam(model, image_tensor, original_image):
     w, h = orig_rgb.size
     cam_resized = cv2.resize(cam, (w, h), interpolation=cv2.INTER_LINEAR)
 
-    # Apply jet colormap (returns BGR)
-    heatmap_bgr = cv2.applyColorMap(np.uint8(255 * cam_resized), cv2.COLORMAP_JET)
+    # ✅ Explicit cast to uint8 CV_8UC1 before applyColorMap
+    cam_uint8 = np.uint8(255 * cam_resized)          # CV_8UC1
+    heatmap_bgr = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)
     heatmap_rgb = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB)
 
-    # Blend with original
     orig_np = np.array(orig_rgb, dtype=np.float32)
     overlay = 0.55 * orig_np + 0.45 * heatmap_rgb.astype(np.float32)
     overlay = np.clip(overlay, 0, 255).astype(np.uint8)
 
-    score = float(cam_resized.mean())
-    return Image.fromarray(overlay), score
+    return Image.fromarray(overlay), float(cam_resized.mean())
