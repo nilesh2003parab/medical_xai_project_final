@@ -23,65 +23,60 @@ from utils.feedback_dataset import doctor_feedback
 st.set_page_config(page_title="Medical XAI", layout="wide")
 st.title("🧠 Real-Time Explainable Medical Image Classification")
 
-# ---------- DEVICE (FORCED CPU FIX) ----------
+# ---------- DEVICE ----------
 device = torch.device("cpu")
 
-# ---------- LOAD MODEL ----------
-model = models.resnet18(weights=None)
-model.fc = nn.Linear(model.fc.in_features, 2)
 
-# FIX FOR SHAP INPLACE ERROR
-def disable_inplace(model):
-    for module in model.modules():
+# ---------- DISABLE INPLACE (fixes SHAP error) ----------
+def disable_inplace(m):
+    for module in m.modules():
         if hasattr(module, "inplace"):
             module.inplace = False
 
-disable_inplace(model)
 
-model = model.to(device)
+# ---------- LOAD MODEL — use cache_resource (not cache_data) ----------
+@st.cache_resource(show_spinner="Loading model...")
+def load_model():
+    m = models.resnet18(weights=None)
+    m.fc = nn.Linear(m.fc.in_features, 2)
+    disable_inplace(m)
+    m = m.to(device)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(BASE_DIR, "weights", "resnet18_pneumonia_classifier.pth")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(BASE_DIR, "weights", "resnet18_pneumonia_classifier.pth")
 
-st.write("Model path:", model_path)
-st.write("File exists?", os.path.exists(model_path))
+    if not os.path.exists(path):
+        st.error(f"❌ Weights not found: {path}\nRun train_model.py first.")
+        st.stop()
 
-try:
-    state_dict = torch.load(model_path, map_location=device)
-    model.load_state_dict(state_dict)
-    model.eval()
-    st.success("✅ Model loaded successfully!")
-except Exception as e:
-    st.error(f"❌ Model loading failed: {e}")
+    state_dict = torch.load(path, map_location=device)
+    m.load_state_dict(state_dict)
+    m.eval()
+    return m
 
-# ---------- CACHE LIME ----------
-@st.cache_data(show_spinner=False)
-def cached_lime(_model, image_np, _transform):
-    return run_lime(_model, image_np, _transform)
 
-# ---------- CACHE SHAP ----------
-@st.cache_data(show_spinner=False)
-def cached_shap(_model, _img_tensor):
-    return run_shap(_model, _img_tensor)
+model = load_model()
+st.success("✅ Model loaded successfully!")
 
-# ---------- CACHE IMAGE PREPROCESSING ----------
-@st.cache_data(show_spinner=False)
-def preprocess_image(_image, _transform):
-    tensor = _transform(_image).unsqueeze(0).to(device)
-    tensor.requires_grad_()
+transform = get_transform()
+
+
+# ---------- HELPERS (no cache_data on torch objects) ----------
+def preprocess_image(image):
+    tensor = transform(image).unsqueeze(0).to(device)
     return tensor
 
-# ---------- CACHE PREDICTION ----------
-@st.cache_data(show_spinner=False)
-def cached_prediction(_model, _img_tensor):
-    _model.eval()
+
+def run_prediction(img_tensor):
+    model.eval()
     with torch.no_grad():
-        logits = _model(_img_tensor)
+        logits = model(img_tensor)
         probs = torch.softmax(logits, dim=1)
     pred_class = torch.argmax(probs, dim=1).item()
     confidence = probs[0, pred_class].item()
     label = "Pneumonia" if pred_class == 1 else "Normal"
     return pred_class, confidence, label
+
 
 # ---------- SIDEBAR ----------
 st.sidebar.header("🧾 Patient Information")
@@ -103,29 +98,24 @@ if uploaded is not None:
     image = Image.open(uploaded).convert("RGB")
     st.image(image, caption="Input Medical Image", width=400)
 
-    transform = get_transform()
-    img_tensor = preprocess_image(image, transform)
+    img_tensor = preprocess_image(image)
 
     with st.spinner("🩺 Running model prediction..."):
-        pred_class, confidence, label = cached_prediction(model, img_tensor)
+        pred_class, confidence, label = run_prediction(img_tensor)
         st.success(f"🩺 Prediction: **{label}**  (Confidence: {confidence:.2f})")
 
     st.divider()
     st.subheader("🔍 Explainability Results")
 
+    gradcam_score = lime_score = shap_score = None
+
     # ---------- LIME ----------
     try:
         st.markdown("### 🧩 LIME Explanation")
-        progress = st.progress(0)
-        for i in range(0, 60, 20):
-            progress.progress(i)
-            time.sleep(0.1)
-
-        lime_img, lime_score = cached_lime(model, np.array(image), transform)
-
-        progress.progress(100)
+        with st.spinner("Running LIME..."):
+            lime_img, lime_score = run_lime(model, np.array(image), transform)
         st.image(lime_img, use_container_width=True)
-        st.caption(f"Score: {float(lime_score):.3f}")
+        st.caption(f"LIME Score: {float(lime_score):.3f}")
     except Exception as e:
         st.error(f"LIME error: {e}")
 
@@ -134,16 +124,10 @@ if uploaded is not None:
     # ---------- Grad-CAM ----------
     try:
         st.markdown("### 🔥 Grad-CAM Heatmap")
-        progress = st.progress(0)
-        for i in range(0, 60, 20):
-            progress.progress(i)
-            time.sleep(0.1)
-
-        gradcam_img, gradcam_score = generate_gradcam(model, img_tensor, image)
-
-        progress.progress(100)
+        with st.spinner("Running Grad-CAM..."):
+            gradcam_img, gradcam_score = generate_gradcam(model, img_tensor, image)
         st.image(gradcam_img, use_container_width=True)
-        st.caption(f"Score: {float(gradcam_score):.3f}")
+        st.caption(f"Grad-CAM Score: {float(gradcam_score):.3f}")
     except Exception as e:
         st.error(f"Grad-CAM error: {e}")
 
@@ -152,30 +136,34 @@ if uploaded is not None:
     # ---------- SHAP ----------
     try:
         st.markdown("### 📊 SHAP Explanation")
-        progress = st.progress(0)
-        for i in range(0, 60, 20):
-            progress.progress(i)
-            time.sleep(0.1)
+        with st.spinner("Running SHAP..."):
+            shap_values, shap_score = run_shap(model, img_tensor)
 
-        shap_values, shap_score = cached_shap(model, img_tensor)
+        if isinstance(shap_values, list):
+            sv = np.array(shap_values[pred_class])
+        else:
+            sv = np.array(shap_values)
 
-        progress.progress(100)
+        # Flatten to 3 channel values for bar chart
+        sv = np.squeeze(sv)
+        if sv.ndim == 3:
+            channel_means = np.mean(np.abs(sv), axis=(1, 2))
+        elif sv.ndim == 1:
+            channel_means = sv[:3]
+        else:
+            channel_means = np.mean(np.abs(sv), axis=tuple(range(1, sv.ndim)))[:3]
 
-        if isinstance(shap_values, torch.Tensor):
-            shap_values = shap_values.detach().cpu().numpy()
+        channel_means = np.array(channel_means).flatten()[:3]
 
-        if shap_values.ndim > 1:
-            shap_values = np.mean(np.abs(shap_values), axis=(0, 1))
-
-        labels = ["Red", "Green", "Blue"]
+        labels_rgb = ["Red", "Green", "Blue"]
         fig, ax = plt.subplots(figsize=(5, 3))
-        ax.bar(labels, shap_values[:3])
-        ax.set_title("SHAP Feature Importance")
-        ax.set_ylabel("Impact")
+        ax.bar(labels_rgb, channel_means)
+        ax.set_title("SHAP Channel Importance")
+        ax.set_ylabel("Mean |SHAP|")
         plt.tight_layout()
-
         st.pyplot(fig)
-        st.caption(f"Score: {float(shap_score):.3f}")
+        plt.close(fig)
+        st.caption(f"SHAP Score: {float(shap_score):.3f}")
 
     except Exception as e:
         st.error(f"SHAP error: {e}")
@@ -184,20 +172,11 @@ if uploaded is not None:
 
     # ---------- E-Score ----------
     try:
-        if "gradcam_score" in locals() and \
-           "lime_score" in locals() and \
-           "shap_score" in locals():
-
-            escore_value = e_score(
-                float(gradcam_score),
-                float(lime_score),
-                float(shap_score)
-            )
-
-            st.info(f"E-Score: {float(escore_value):.3f}")
+        if gradcam_score is not None and lime_score is not None and shap_score is not None:
+            escore_value = e_score(float(gradcam_score), float(lime_score), float(shap_score))
+            st.info(f"🧮 E-Score (Weighted Explainability): **{float(escore_value):.3f}**")
         else:
-            st.warning("E-Score not computed due to missing explanation scores.")
-
+            st.warning("E-Score not computed — one or more explanations failed.")
     except Exception as e:
         st.error(f"E-Score error: {e}")
 
@@ -206,10 +185,10 @@ if uploaded is not None:
     # ---------- Doctor Feedback ----------
     try:
         feedback_img, feedback_text = doctor_feedback(label)
-        st.image(feedback_img, width=350)
+        st.image(feedback_img, width=400)
         st.caption(feedback_text)
     except Exception:
-        st.warning("No doctor feedback available.")
+        st.warning("No doctor feedback image available.")
 
     st.divider()
 
@@ -222,5 +201,4 @@ if uploaded is not None:
         ]
         with open("patient_records.csv", "a", newline="") as f:
             csv.writer(f).writerow(row)
-
         st.success("✅ Patient data saved successfully!")
