@@ -133,6 +133,15 @@ if uploaded is not None:
         with st.spinner("Running SHAP..."):
             channel_importance, spatial_map, shap_score = run_shap(model, img_tensor)
 
+        # Ensure correct shapes before any display
+        channel_importance = np.array(channel_importance).flatten()[:3]
+        if len(channel_importance) < 3:
+            channel_importance = np.pad(channel_importance, (0, 3 - len(channel_importance)))
+
+        spatial_map = np.array(spatial_map)
+        if spatial_map.ndim != 2:
+            spatial_map = np.zeros((224, 224), dtype=np.float32)
+
         shap_col1, shap_col2 = st.columns(2)
 
         with shap_col1:
